@@ -66,6 +66,7 @@ namespace VToyEditor
             }
             _gl.Uniform1(location, value);
         }
+
         public void SetUniform(string name, Color value)
         {
             int location = _gl.GetUniformLocation(_handle, name);
@@ -74,6 +75,16 @@ namespace VToyEditor
                 throw new Exception($"{name} uniform not found on shader.");
             }
             _gl.Uniform4(location, new Vector4(value.r, value.g, value.b, value.a));
+        }
+
+        public void SetUniform(string name, Vector3 value)
+        {
+            int location = _gl.GetUniformLocation(_handle, name);
+            if (location == -1)
+            {
+                throw new Exception($"{name} uniform not found on shader.");
+            }
+            _gl.Uniform3(location, new Vector3(value.X, value.Y, value.Z));
         }
 
         public void Dispose()

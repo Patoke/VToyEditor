@@ -438,7 +438,6 @@ namespace VToyEditor
                         {
                             uint matIdx = r.ReadUInt32();
 
-                            // Simplified VTOP logic for brevity (skipping exact logic as VTO1 is target)
                             uint idxCount = r.ReadUInt32();
                             uint vertCount = r.ReadUInt32();
                             r.ReadUInt32(); // Unk
@@ -455,9 +454,10 @@ namespace VToyEditor
 
                             var outVertices = new Vertex[vtopVertCount];
 
-                            foreach (ushort originalIndex in vertexRemapTable)
+                            for (int i = 0; i < vertexRemapTable.Length; i++)
                             {
-                                outVertices[originalIndex] = vertices[originalIndex];
+                                ushort originalIndex = vertexRemapTable[i];
+                                outVertices[i] = vertices[originalIndex];
                             }
 
                             asset.SubMeshes.Add(new SubMesh { Vertices = outVertices, Indices = indices, MaterialIndex = (int)matIdx });
