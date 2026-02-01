@@ -9,6 +9,8 @@ using System.IO;
 using System.Numerics; // Uses System.Numerics vectors/matrices
 using System.Runtime.InteropServices;
 using System.Xml.Linq;
+using VToyEditor.Parsers;
+using VToyEditor.Modules;
 
 namespace VToyEditor
 {
@@ -35,6 +37,7 @@ namespace VToyEditor
         public Matrix4x4 Transform;
         public Texture Texture;
         public float DistanceToCamera;
+        public bool IsTwoSided;
 
         // This allows List.Sort() to automatically order them
         public int CompareTo(TransparentDrawCall other)
@@ -48,67 +51,103 @@ namespace VToyEditor
     {
         private static IWindow _window;
         private static GL _gl;
-        private static Dictionary<string, Texture> _textureCache = new Dictionary<string, Texture>();
         private static Shader _sceneShader;
+        private static Shader _debugShader;
+        private static float _globalGamma = 1f;
+        private static MeshGenerator _decalMesh = new MeshGenerator();
+        private static MeshGenerator _obbMesh = new MeshGenerator();
 
         private static IKeyboard _primaryKeyboard;
         private static IMouse _primaryMouse;
         private static bool _cursorLocked = true;
 
         public static ImGuiController imguiController = null;
-        public static VTSceneParser scene;
+        public static VTSCNParser scene;
+        public static VTOPTParser sceneOPT;
+        public static VTHMParser sceneHeightMap;
+        public static Dictionary<string, Texture> textureCache = new Dictionary<string, Texture>();
+
+        private static void AddTextureToCache(string texName, string fullPath)
+        {
+            if (string.IsNullOrEmpty(texName) || textureCache.ContainsKey(texName)) return;
+
+            if (!texName.EndsWith(".tex")) fullPath += ".tex";
+
+            if (File.Exists(fullPath))
+            {
+                try
+                {
+                    textureCache[texName] = new Texture(_gl, fullPath);
+                }
+                catch (Exception ex) { Console.WriteLine($"Failed to load {texName}: {ex.Message}"); }
+            }
+            else
+            {
+                Console.WriteLine($"Texture missing: {texName}");
+            }
+        }
 
         public static void ParseScene(string filename)
         {
             // Destroy old meshes
-            if (scene != null)
+            if (sceneOPT != null)
             {
-                foreach (var mesh in scene.StaticMeshes)
+                foreach (var mesh in sceneOPT.StaticMeshes)
                 {
                     foreach (var sub in mesh.SubMeshes)
                     {
                         sub.Dispose();
                     }
                 }
+
+                _decalMesh.mesh.Dispose();
+                _obbMesh.mesh.Dispose();
             }
 
             // Load Scene
-            scene = new VTSceneParser();
+            scene = new VTSCNParser();
             scene.Parse(filename);
 
-            // Load Scene Textures
+            sceneHeightMap = new VTHMParser();
+            sceneHeightMap.Parse("./hms/" + scene.HeightMapName.Replace("nfos\\", string.Empty));
+
+            sceneOPT = new VTOPTParser();
+            sceneOPT.Parse("./opts/" + scene.MapName.Replace("nfos\\", string.Empty));
+
             string textureDir = "./texs/";
-            foreach (var mesh in scene.StaticMeshes)
+
+            // Load Sky Texture
+            string skyTexturePath = Path.Combine(textureDir, scene.SkyTextureName);
+            AddTextureToCache(scene.SkyTextureName, skyTexturePath);
+
+            // Load Scene Textures
+            foreach (var mesh in sceneOPT.StaticMeshes)
             {
-                foreach (var texName in mesh.MaterialTextureNames)
+                foreach (var material in mesh.Materials)
                 {
-                    if (string.IsNullOrEmpty(texName) || _textureCache.ContainsKey(texName)) continue;
-
-                    string fullPath = Path.Combine(textureDir, texName);
-
-                    if (File.Exists(fullPath))
-                    {
-                        try
-                        {
-                            _textureCache[texName] = new Texture(_gl, fullPath);
-                        }
-                        catch (Exception ex) { Console.WriteLine($"Failed to load {texName}: {ex.Message}"); }
-                    }
-                    else
-                    {
-                        Console.WriteLine($"Texture missing: {texName}");
-                    }
+                    string fullPath = Path.Combine(textureDir, material.TextureName);
+                    AddTextureToCache(material.TextureName, fullPath);
                 }
             }
 
+            // Load Decal Textures
+            foreach (var decal in sceneOPT.Decals)
+            {
+                string fullPath = Path.Combine(textureDir, decal.Name);
+                AddTextureToCache(decal.Name, fullPath);
+            }
+
             // Upload geometry
-            foreach (var mesh in scene.StaticMeshes)
+            foreach (var mesh in sceneOPT.StaticMeshes)
             {
                 foreach (var sub in mesh.SubMeshes)
                 {
                     sub.Upload(_gl);
                 }
             }
+
+            _decalMesh.mesh = MeshGenerator.GenerateQuadMesh(_gl);
+            _obbMesh.mesh = MeshGenerator.GenerateCubeMesh(_gl);
         }
 
         static void Main(string[] args)
@@ -157,9 +196,13 @@ namespace VToyEditor
 
             imguiController = new ImGuiController(_gl, _window, input);
 
-            _sceneShader = new Shader(_gl, "scene_shader.vert", "scene_shader.frag");
+            // Initialize emulated modules list
+            IGameModule.Initialize();
 
-            ParseScene("mp_do_plaza.opt");
+            _sceneShader = new Shader(_gl, "scene_shader.vert", "scene_shader.frag");
+            _debugShader = new Shader(_gl, "debug_shader.vert", "debug_shader.frag");
+
+            ParseScene("scns/mp_dm_vertigo.scn");
 
             _gl.Enable(EnableCap.DepthTest);
 
@@ -195,7 +238,7 @@ namespace VToyEditor
                 return;
             }
 
-            if (!_cursorLocked && _primaryMouse != null)
+            if (!_cursorLocked && _primaryMouse != null && button == MouseButton.Right)
             {
                 _cursorLocked = true;
                 _primaryMouse.Cursor.CursorMode = CursorMode.Raw;
@@ -217,67 +260,84 @@ namespace VToyEditor
         {
             imguiController.Update((float)dt);
 
+            _gl.ClearColor(scene.FogColor.r, scene.FogColor.g, scene.FogColor.b, scene.FogColor.a);
             _gl.Clear(ClearBufferMask.ColorBufferBit | ClearBufferMask.DepthBufferBit);
+
+            // Shader setup
             _sceneShader.Use();
 
-            // --- CAMERA ---
+            _sceneShader.SetUniform("uIsUnlit", false);
+            _sceneShader.SetUniform("uGamma", _globalGamma);
+
+            _sceneShader.SetUniform("uFogColor", new Vector3(scene.FogColor.r, scene.FogColor.g, scene.FogColor.b));
+            _sceneShader.SetUniform("uFogNear", scene.FogNear);
+            _sceneShader.SetUniform("uFogFar", scene.FogFar);
+
+            // Camera setup
             var view = Camera.GetViewMatrix();
-            var projection = Camera.GetProjectionMatrix((float)_window.Size.X / _window.Size.Y);
+            var projection = Camera.GetProjectionMatrix((float)_window.Size.X / _window.Size.Y, scene.CamNear, scene.CamFar);
 
             _sceneShader.SetUniform("view", view);
             _sceneShader.SetUniform("projection", projection);
             _sceneShader.SetUniform("viewPos", Camera.camPos);
 
-            // --- LIGHTING ---
+            // Lighting
             int lightIndex = 0;
             Vector3 globalAmbientAccumulator = Vector3.Zero;
+            int maxLights = 128;
 
-            // Limit to MAX_LIGHTS defined in shader (32)
-            int maxLights = 32;
-
-            foreach (var l in scene.Lights)
+            foreach (var l in sceneOPT.Lights)
             {
                 if (lightIndex >= maxLights) break;
 
-                // Handle Ambient Type separately as global illumination
                 if (l.Type == LightObject.LightType.AMBIENT_LIGHT)
                 {
-                    globalAmbientAccumulator += new Vector3(l.AmbientColor.r, l.AmbientColor.g, l.AmbientColor.b);
+                    globalAmbientAccumulator += new Vector3(l.DiffuseColor.r, l.DiffuseColor.g, l.DiffuseColor.b);
                     continue;
                 }
 
                 string baseUniform = $"lights[{lightIndex}]";
 
-                // Common Properties
                 _sceneShader.SetUniform($"{baseUniform}.type", (int)l.Type);
-                _sceneShader.SetUniform($"{baseUniform}.ambient", l.AmbientColor);
-                _sceneShader.SetUniform($"{baseUniform}.diffuse", l.DiffuseColor);
-                _sceneShader.SetUniform($"{baseUniform}.specular", l.SpecularColor);
+                _sceneShader.SetUniform($"{baseUniform}.ambient", new Vector4(l.SpecularColor.r, l.SpecularColor.g, l.SpecularColor.b, 1.0f));
+                _sceneShader.SetUniform($"{baseUniform}.diffuse", new Vector4(l.DiffuseColor.r, l.DiffuseColor.g, l.DiffuseColor.b, 1.0f));
+                _sceneShader.SetUniform($"{baseUniform}.specular", new Vector4(l.AmbientColor.r, l.AmbientColor.g, l.AmbientColor.b, 1.0f));
 
-                // Type Specific Properties
-                // Note: We access specific properties because they overlap in memory (Union),
-                // but we must be careful to read the correct logic for the type.
+                float att0 = 0.0000001f;
+                float att1 = 0.0001f;
+                float att2 = 0.00002f;
+                float range = 1000.0f;
+
                 if (l.Type == LightObject.LightType.POINT_LIGHT)
                 {
-                    _sceneShader.SetUniform($"{baseUniform}.position", l.Point.Position);
-                    _sceneShader.SetUniform($"{baseUniform}.start", l.Point.Start);
-                    _sceneShader.SetUniform($"{baseUniform}.end", l.Point.End);
-                    // Radius logic for old format if needed, but shader uses start/end
+                    _sceneShader.SetUniform($"{baseUniform}.position", l.Point.Position * new Vector3(1, 1, -1));
+
+                    att0 = 0.0f;
+                    att1 = 0.0f;
+                    float r = l.Point.Radius > 0 ? l.Point.Radius : l.Point.End;
+                    att2 = 1.0f / (r * r);
+                    range = r;
                 }
                 else if (l.Type == LightObject.LightType.SPOT_LIGHT)
                 {
-                    _sceneShader.SetUniform($"{baseUniform}.position", l.Spot.Position);
+                    _sceneShader.SetUniform($"{baseUniform}.position", l.Spot.Position * new Vector3(1, 1, -1));
                     _sceneShader.SetUniform($"{baseUniform}.direction", l.Spot.Direction);
-                    // Pass cone directly (assuming Cosine value or Angle depending on source data)
-                    _sceneShader.SetUniform($"{baseUniform}.coneRadius", l.Spot.ConeRadius);
-                    // Spotlights in this format likely also use Start/End for falloff distance
-                    _sceneShader.SetUniform($"{baseUniform}.start", 0.0f);
-                    _sceneShader.SetUniform($"{baseUniform}.end", 1000.0f); // Default high range if not provided
+
+                    float radius = 90f * MathF.PI / 180f; // Default to 90 degrees
+
+                    _sceneShader.SetUniform($"{baseUniform}.theta", radius);
+                    _sceneShader.SetUniform($"{baseUniform}.phi", radius);
+                    _sceneShader.SetUniform($"{baseUniform}.falloff", 1.0f);
                 }
                 else if (l.Type == LightObject.LightType.DIRECTIONAL_LIGHT)
                 {
                     _sceneShader.SetUniform($"{baseUniform}.direction", l.Directional.Direction);
                 }
+
+                _sceneShader.SetUniform($"{baseUniform}.att0", att0);
+                _sceneShader.SetUniform($"{baseUniform}.att1", att1);
+                _sceneShader.SetUniform($"{baseUniform}.att2", att2);
+                _sceneShader.SetUniform($"{baseUniform}.range", range);
 
                 lightIndex++;
             }
@@ -285,23 +345,20 @@ namespace VToyEditor
             _sceneShader.SetUniform("numLights", lightIndex);
             _sceneShader.SetUniform("globalAmbient", globalAmbientAccumulator);
 
-
-            // --- MESH RENDERING (Existing Code) ---
-
-            // List to hold transparent items for later sorting
             var transparentQueue = new List<TransparentDrawCall>();
 
             Matrix4x4 rootTransform = Matrix4x4.CreateScale(1, 1, -1);
 
-            // Helper Action to process a mesh
+            // Helper to process a mesh
             void ProcessMesh(StaticMeshAsset mesh, Matrix4x4 modelMatrix)
             {
                 foreach (var sub in mesh.SubMeshes)
                 {
-                    string texName = (sub.MaterialIndex >= 0 && sub.MaterialIndex < mesh.MaterialTextureNames.Count)
-                        ? mesh.MaterialTextureNames[sub.MaterialIndex] : "";
+                    Material meshMaterial = mesh.Materials[sub.MaterialIndex];
 
-                    _textureCache.TryGetValue(texName, out Texture tex);
+                    string texName = meshMaterial.TextureName;
+
+                    textureCache.TryGetValue(texName, out Texture tex);
 
                     if (tex != null && tex.IsTransparent)
                     {
@@ -311,7 +368,8 @@ namespace VToyEditor
                             SubMesh = sub,
                             Transform = modelMatrix,
                             Texture = tex,
-                            DistanceToCamera = dist
+                            DistanceToCamera = dist,
+                            IsTwoSided = meshMaterial.IsTwoSided
                         });
                     }
                     else
@@ -319,24 +377,88 @@ namespace VToyEditor
                         _sceneShader.SetUniform("model", modelMatrix);
                         if (tex != null) tex.Bind(TextureUnit.Texture0);
 
+                        if (meshMaterial.IsTwoSided)
+                        {
+                            _gl.Disable(EnableCap.CullFace);
+                        }
+                        else
+                        {
+                            _gl.Enable(EnableCap.CullFace);
+                            _gl.CullFace(GLEnum.Back);
+                        }
+
                         _gl.BindVertexArray(sub.Vao);
                         _gl.DrawElements(PrimitiveType.Triangles, (uint)sub.IndexCount, DrawElementsType.UnsignedShort, null);
                     }
                 }
             }
 
-            // --- PASS 1: OPAQUE ---
+            void RenderTransparencyPass(bool isColorPass)
+            {
+                foreach (var call in transparentQueue)
+                {
+                    bool isDecal = (call.SubMesh == _decalMesh.mesh);
+
+                    // Skip decals on color pass (we don't want them to write to the depth buffer)
+                    if (isDecal && !isColorPass)
+                    {
+                        continue;
+                    }
+                    
+                    _sceneShader.SetUniform("uIsUnlit", isDecal);
+
+                    _sceneShader.SetUniform("model", call.Transform);
+                    call.Texture.Bind(TextureUnit.Texture0);
+
+                    _gl.BindVertexArray(call.SubMesh.Vao);
+
+                    if (call.IsTwoSided)
+                    {
+                        if (isColorPass)
+                        {
+                            // Render back then front for correct blending
+                            _gl.CullFace(GLEnum.Front);
+                            _gl.DrawElements(PrimitiveType.Triangles, (uint)call.SubMesh.IndexCount, DrawElementsType.UnsignedShort, null);
+
+                            _gl.CullFace(GLEnum.Back);
+                            _gl.DrawElements(PrimitiveType.Triangles, (uint)call.SubMesh.IndexCount, DrawElementsType.UnsignedShort, null);
+                        }
+                        else
+                        {
+                            // Draw both sides at once to fill the depth buffer
+                            _gl.Disable(EnableCap.CullFace);
+                            _gl.DrawElements(PrimitiveType.Triangles, (uint)call.SubMesh.IndexCount, DrawElementsType.UnsignedShort, null);
+                        }
+                    }
+                    else
+                    {
+                        if (isDecal) _gl.Disable(EnableCap.CullFace);
+                        else
+                        {
+                            _gl.Enable(EnableCap.CullFace);
+                            _gl.CullFace(GLEnum.Back);
+                        }
+                        _gl.DrawElements(PrimitiveType.Triangles, (uint)call.SubMesh.IndexCount, DrawElementsType.UnsignedShort, null);
+                    }
+                }
+
+                _sceneShader.SetUniform("uIsUnlit", false);
+            }
+
+            // Opaque pass
             _gl.DepthMask(true);
 
-            foreach (var mesh in scene.StaticMeshes)
+            // Render static meshes
+            foreach (var mesh in sceneOPT.StaticMeshes)
             {
                 ProcessMesh(mesh, rootTransform);
             }
 
-            foreach (var prop in scene.Props)
+            // Render static props
+            foreach (var prop in sceneOPT.Props)
             {
-                if (prop.MeshIndex < 0 || prop.MeshIndex >= scene.StaticMeshes.Count) continue;
-                var refMesh = scene.StaticMeshes[prop.MeshIndex];
+                if (prop.MeshIndex < 0 || prop.MeshIndex >= sceneOPT.StaticMeshes.Count) continue;
+                var refMesh = sceneOPT.StaticMeshes[prop.MeshIndex];
 
                 Matrix4x4.Invert(refMesh.WorldTransform, out Matrix4x4 invBase);
                 Matrix4x4 combined = invBase * prop.Transform * rootTransform;
@@ -344,26 +466,107 @@ namespace VToyEditor
                 ProcessMesh(refMesh, combined);
             }
 
-            // --- PASS 2: TRANSPARENT ---
-            transparentQueue.Sort();
-            _gl.DepthMask(false);
-            _gl.Enable(EnableCap.CullFace);
-
-            foreach (var call in transparentQueue)
+            // Transparency pass
+            // Pass decals to transparent renderer
+            foreach (var decal in sceneOPT.Decals)
             {
-                _sceneShader.SetUniform("model", call.Transform);
-                call.Texture.Bind(TextureUnit.Texture0);
-                _gl.BindVertexArray(call.SubMesh.Vao);
+                if (!textureCache.TryGetValue(decal.Name, out Texture tex))
+                {
+                    if (!textureCache.TryGetValue(decal.Name + ".tex", out tex)) continue;
+                }
 
-                _gl.CullFace(GLEnum.Front);
-                _gl.DrawElements(PrimitiveType.Triangles, (uint)call.SubMesh.IndexCount, DrawElementsType.UnsignedShort, null);
+                Matrix4x4 viewMatrix = Camera.GetViewMatrix();
 
-                _gl.CullFace(GLEnum.Back);
-                _gl.DrawElements(PrimitiveType.Triangles, (uint)call.SubMesh.IndexCount, DrawElementsType.UnsignedShort, null);
+                Vector3 camRight = new Vector3(viewMatrix.M11, viewMatrix.M21, viewMatrix.M31);
+                Vector3 camUp = new Vector3(viewMatrix.M12, viewMatrix.M22, viewMatrix.M32);
+                Vector3 camBack = new Vector3(viewMatrix.M13, viewMatrix.M23, viewMatrix.M33);
+
+                Vector3 decalPos = decal.Position * new Vector3(1, 1, -1);
+                Vector3 worldPos = decalPos + (camBack * decal.ZOffset);
+
+                // Apply billboard transform
+                Matrix4x4 modelMatrix = new Matrix4x4(
+                    camRight.X * decal.ScaleX, camRight.Y * decal.ScaleX, camRight.Z * decal.ScaleX, 0,
+                    -camBack.X, -camBack.Y, -camBack.Z, 0,
+                    camUp.X * decal.ScaleY, camUp.Y * decal.ScaleY, camUp.Z * decal.ScaleY, 0,
+                    worldPos.X, worldPos.Y, worldPos.Z, 1
+                );
+
+                float dist = Vector3.DistanceSquared(Camera.camPos, worldPos);
+
+                transparentQueue.Add(new TransparentDrawCall
+                {
+                    SubMesh = _decalMesh.mesh,
+                    Transform = modelMatrix,
+                    Texture = tex,
+                    DistanceToCamera = dist
+                });
             }
 
-            _gl.Disable(EnableCap.CullFace);
+            transparentQueue.Sort();
+
+            // Depth prepass
             _gl.DepthMask(true);
+            _gl.ColorMask(false, false, false, false);
+            _gl.Disable(EnableCap.CullFace); // Double sided
+
+            _sceneShader.Use();
+            _sceneShader.SetUniform("alphaCutoff", 0.5f); // Only draw solid part of the texture
+
+            RenderTransparencyPass(false); // Do depth prepass
+
+            // Color pass
+            _gl.DepthMask(false);
+            _gl.ColorMask(true, true, true, true);
+            _gl.DepthFunc(DepthFunction.Lequal);
+            _gl.Enable(EnableCap.Blend);
+
+            _sceneShader.SetUniform("alphaCutoff", 0.0f);
+
+            RenderTransparencyPass(true); // Do color pass
+
+            // Restore defaults
+            _gl.DepthMask(true);
+            _gl.Enable(EnableCap.CullFace);
+            _gl.DepthFunc(DepthFunction.Less);
+
+            // Debug pass
+            if (DebugMenu.ShowCollisionBoxes)
+            {
+                if (DebugMenu.DisableDepthTest)
+                {
+                    _gl.Disable(GLEnum.DepthTest);
+                }
+
+                _debugShader.Use();
+
+                _debugShader.SetUniform("view", view);
+                _debugShader.SetUniform("projection", projection);
+
+                _debugShader.SetUniform("uColor", new Vector4(0, 1, 0, 1)); // Pass a green debug color
+
+                _gl.PolygonMode(GLEnum.FrontAndBack, PolygonMode.Line); // Enable Wireframe
+                _gl.Disable(EnableCap.CullFace);
+
+                foreach (var box in sceneOPT.CollisionBoxes)
+                {
+                    Matrix4x4 sizeScale = Matrix4x4.CreateScale(box.HalfExtents * 2f);
+                    Matrix4x4 model = sizeScale * box.Transform * rootTransform;
+
+                    _debugShader.SetUniform("model", model);
+
+                    _gl.BindVertexArray(_obbMesh.mesh.Vao);
+                    _gl.DrawElements(PrimitiveType.Triangles, (uint)_obbMesh.mesh.IndexCount, DrawElementsType.UnsignedShort, null);
+                }
+
+                _gl.PolygonMode(GLEnum.FrontAndBack, PolygonMode.Fill); // Restore solid rendering
+                _gl.Enable(EnableCap.CullFace);
+
+                if (DebugMenu.DisableDepthTest)
+                {
+                    _gl.Enable(GLEnum.DepthTest);
+                }
+            }
 
             DebugMenu.OnRender();
 

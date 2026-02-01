@@ -7,7 +7,7 @@ using System.Runtime.InteropServices;
 using System.Text;
 using static System.Runtime.InteropServices.JavaScript.JSType;
 
-namespace VToyEditor
+namespace VToyEditor.Parsers
 {
     public struct Color
     {
@@ -66,25 +66,35 @@ namespace VToyEditor
         }
     }
 
+    public class Material
+    {
+        public string TextureName;
+        public float UnknownValue;
+        public bool IsTwoSided;
+    }
+
     public class StaticMeshAsset
     {
         public List<SubMesh> SubMeshes = new List<SubMesh>();
         public Matrix4x4 WorldTransform;
-        public List<string> MaterialTextureNames = new List<string>();
+        public List<Material> Materials = new List<Material>();
+        public Vector3[] Corners;
     }
 
     public class PropObject
     {
         public int MeshIndex;
         public Matrix4x4 Transform;
+        public Vector3[] Corners;
     }
+
     public class DecalObject
     {
         public string Name;
         public Vector3 Position;
-        public float Width;
-        public float Height;
-        public float Rotation;
+        public float ScaleX;
+        public float ScaleY;
+        public float ZOffset; // Used to prevent Z-Fighting
     }
 
     [StructLayout(LayoutKind.Explicit)]
@@ -151,10 +161,10 @@ namespace VToyEditor
     public class CollisionBox
     {
         public Matrix4x4 Transform;
-        public Vector3 Position;
+        public Vector3 HalfExtents;
     }
 
-    public class VTSceneParser
+    public class VTOPTParser
     {
         public List<StaticMeshAsset> StaticMeshes = new List<StaticMeshAsset>();
         public List<PropObject> Props = new List<PropObject>();
@@ -195,24 +205,25 @@ namespace VToyEditor
             for (int i = 0; i < propCount; i++)
             {
                 uint meshIndex = reader.ReadUInt32();
-                Matrix4x4 mat = ReadMatrix(reader);
+                Matrix4x4 propTransform = Helpers.ReadMatrix(reader);
 
-                // Skip corners (8 vectors)
-                reader.ReadBytes(8 * 12);
+                Vector3[] corners = new Vector3[8];
+                for (int c = 0; c < 8; c++)
+                {
+                    corners[c] = Helpers.ReadVector3(reader);
+                }
 
-                Props.Add(new PropObject { MeshIndex = (int)meshIndex, Transform = mat });
+                Props.Add(new PropObject { MeshIndex = (int)meshIndex, Transform = propTransform, Corners = corners });
 
                 if (_isOldFormat)
                 {
                     uint obbCount = reader.ReadUInt32();
                     for (int j = 0; j < obbCount; j++)
                     {
-                        Matrix4x4 transform = ReadMatrix(reader);
-                        float posX = reader.ReadSingle();
-                        float posY = reader.ReadSingle();
-                        float posZ = reader.ReadSingle();
+                        Matrix4x4 transform = Helpers.ReadMatrix(reader);
+                        Vector3 halfExtents = Helpers.ReadVector3(reader);
 
-                        CollisionBoxes.Add(new CollisionBox { Transform = transform, Position = new Vector3(posX, posY, posZ) });
+                        CollisionBoxes.Add(new CollisionBox { Transform = transform, HalfExtents = halfExtents });
                     }
                 }
             }
@@ -225,20 +236,17 @@ namespace VToyEditor
                 string decalName = "";
                 if (decalNameSize > 0)
                 {
-                    var nameBytes = reader.ReadBytes((int)decalNameSize);
-                    decalName = System.Text.Encoding.UTF8.GetString(nameBytes).Replace("\0", string.Empty);
+                    decalName = Helpers.ReadString(reader, decalNameSize);
                 }
 
-                float posX = reader.ReadSingle();
-                float posY = reader.ReadSingle();
-                float posZ = reader.ReadSingle();
+                Vector3 position = Helpers.ReadVector3(reader);
 
-                float width = reader.ReadSingle();
-                float height = reader.ReadSingle();
+                float scaleX = reader.ReadSingle();
+                float scaleY = reader.ReadSingle();
 
-                float rotation = reader.ReadSingle();
+                float zOffset = reader.ReadSingle();
 
-                Decals.Add(new DecalObject { Name = decalName, Position = new Vector3(posX, posY, posZ), Width = width, Height = height, Rotation = rotation });
+                Decals.Add(new DecalObject { Name = decalName, Position = position, ScaleX = scaleX, ScaleY = scaleY, ZOffset = zOffset });
             }
 
             // Parse Lights
@@ -253,9 +261,7 @@ namespace VToyEditor
                 {
                     case LightObject.LightType.POINT_LIGHT:
 
-                        float pointPosX = reader.ReadSingle();
-                        float pointPosY = reader.ReadSingle();
-                        float pointPosZ = reader.ReadSingle();
+                        Vector3 pointPos = Helpers.ReadVector3(reader);
 
                         if (_isOldFormat)
                         {
@@ -274,31 +280,25 @@ namespace VToyEditor
                             light.Point.End = end;
                         }
 
-                        light.Point.Position = new Vector3(pointPosX, pointPosY, pointPosZ);
+                        light.Point.Position = pointPos;
 
                         break;
                     case LightObject.LightType.SPOT_LIGHT:
-                        float spotPosX = reader.ReadSingle();
-                        float spotPosY = reader.ReadSingle();
-                        float spotPosZ = reader.ReadSingle();
-
-                        float spotDirX = reader.ReadSingle();
-                        float spotDirY = reader.ReadSingle();
-                        float spotDirZ = reader.ReadSingle();
+                        Vector3 spotPos = Helpers.ReadVector3(reader);
+                        Vector3 spotDir = Helpers.ReadVector3(reader);
 
                         float cone = reader.ReadSingle();
 
-                        light.Spot.Position = new Vector3(spotPosX, spotPosY, spotPosZ);
-                        light.Spot.Direction = new Vector3(spotDirX, spotDirY, spotDirZ);
+                        light.Spot.Position = spotPos;
+                        light.Spot.Direction = spotDir;
                         light.Spot.ConeRadius = cone;
 
                         break;
                     case LightObject.LightType.DIRECTIONAL_LIGHT:
-                        float directionalDirX = reader.ReadSingle();
-                        float directionalDirY = reader.ReadSingle();
-                        float directionalDirZ = reader.ReadSingle();
+                        Vector3 directionalDir = Helpers.ReadVector3(reader);
 
-                        light.Directional.Direction = new Vector3(directionalDirX, directionalDirY, directionalDirZ);
+
+                        light.Directional.Direction = directionalDir;
 
                         break;
                     case LightObject.LightType.AMBIENT_LIGHT:
@@ -336,13 +336,11 @@ namespace VToyEditor
             if (colBoxCount > 0)
             {
                 for (int i = 0; i < colBoxCount; i++)
-                { 
-                    Matrix4x4 transform = ReadMatrix(reader);
-                    float posX = reader.ReadSingle();
-                    float posY = reader.ReadSingle();
-                    float posZ = reader.ReadSingle();
+                {
+                    Matrix4x4 transform = Helpers.ReadMatrix(reader);
+                    Vector3 halfExtents = Helpers.ReadVector3(reader);
 
-                    CollisionBoxes.Add(new CollisionBox { Transform = transform, Position = new Vector3(posX, posY, posZ) });
+                    CollisionBoxes.Add(new CollisionBox { Transform = transform, HalfExtents = halfExtents });
                 }
             }
         }
@@ -360,8 +358,7 @@ namespace VToyEditor
                 string materialName = "";
                 if (nameLen > 0)
                 {
-                    var nameBytes = r.ReadBytes((int)nameLen);
-                    materialName = System.Text.Encoding.UTF8.GetString(nameBytes).Replace("\0", string.Empty);
+                    materialName = Helpers.ReadString(r, nameLen);
                 }
 
                 uint texCount = r.ReadUInt32();
@@ -374,23 +371,22 @@ namespace VToyEditor
                     string textureName = "";
                     if (tLen > 0)
                     {
-                        var nameBytes = r.ReadBytes((int)tLen);
-                        textureName = System.Text.Encoding.UTF8.GetString(nameBytes).Replace("\0", string.Empty);
+                        textureName = Helpers.ReadString(r, tLen);
 
                         if (t == 0) diffuseTexture = textureName;
                     }
                 }
 
-                asset.MaterialTextureNames.Add(diffuseTexture ?? "");
-
-                r.ReadByte(); // Two sided
+                bool isTwoSided = r.ReadByte() != 0; // Two sided
                 r.ReadBytes(4 * 16); // UV Map (4 vec4s)
-                r.ReadBytes(4); // Unk
+                float unkMaterialFloat = r.ReadSingle(); // Unk
+
+                asset.Materials.Add(new Material { TextureName = diffuseTexture ?? "", IsTwoSided = isTwoSided, UnknownValue = unkMaterialFloat });
             }
 
-            // Containers
-            uint containerCount = r.ReadUInt32();
-            for (int c = 0; c < containerCount; c++)
+            // LODs
+            uint lodCount = r.ReadUInt32();
+            for (int lodIndex = 0; lodIndex < lodCount; lodIndex++)
             {
                 r.ReadUInt32(); // Unk
                 uint meshCount = r.ReadUInt32();
@@ -411,18 +407,14 @@ namespace VToyEditor
                     {
                         for (int v = 0; v < vtopVertCount; v++)
                         {
-                            float px = r.ReadSingle();
-                            float py = r.ReadSingle();
-                            float pz = r.ReadSingle();
-                            float nx = r.ReadSingle();
-                            float ny = r.ReadSingle();
-                            float nz = r.ReadSingle();
+                            Vector3 point = Helpers.ReadVector3(r);
+                            Vector3 normal = Helpers.ReadVector3(r);
                             float u = r.ReadSingle();
                             float v_tex = r.ReadSingle();
 
                             vertices[v] = new Vertex(
-                                new Vector3(px, py, pz),
-                                new Vector3(nx, ny, nz),
+                                point,
+                                normal,
                                 new Vector2(u, v_tex)
                             );
                         }
@@ -452,15 +444,20 @@ namespace VToyEditor
                             byte[] indexBytes = r.ReadBytes((int)idxCount * 3 * 2);
                             System.Buffer.BlockCopy(indexBytes, 0, indices, 0, indexBytes.Length);
 
-                            var outVertices = new Vertex[vtopVertCount];
-
-                            for (int i = 0; i < vertexRemapTable.Length; i++)
+                            // We only want to parse the first LOD (highest quality)
+                            // Not doing this causes multiple geometry pieces in the same place
+                            if (lodIndex == 0)
                             {
-                                ushort originalIndex = vertexRemapTable[i];
-                                outVertices[i] = vertices[originalIndex];
-                            }
+                                var outVertices = new Vertex[vtopVertCount];
 
-                            asset.SubMeshes.Add(new SubMesh { Vertices = outVertices, Indices = indices, MaterialIndex = (int)matIdx });
+                                for (int i = 0; i < vertexRemapTable.Length; i++)
+                                {
+                                    ushort originalIndex = vertexRemapTable[i];
+                                    outVertices[i] = vertices[originalIndex];
+                                }
+
+                                asset.SubMeshes.Add(new SubMesh { Vertices = outVertices, Indices = indices, MaterialIndex = (int)matIdx });
+                            }
                         }
                         else
                         {
@@ -481,12 +478,8 @@ namespace VToyEditor
 
                             for (int v = 0; v < vertCount; v++)
                             {
-                                float px = r.ReadSingle();
-                                float py = r.ReadSingle();
-                                float pz = r.ReadSingle();
-                                float nx = r.ReadSingle();
-                                float ny = r.ReadSingle();
-                                float nz = r.ReadSingle();
+                                Vector3 point = Helpers.ReadVector3(r);
+                                Vector3 normal = Helpers.ReadVector3(r);
                                 float u = r.ReadSingle();
                                 float v_tex = r.ReadSingle();
 
@@ -494,13 +487,16 @@ namespace VToyEditor
                                 if (stride == 40) r.ReadBytes(8);
 
                                 vertices[v] = new Vertex(
-                                    new Vector3(px, py, pz),
-                                    new Vector3(nx, ny, nz),
+                                    point,
+                                    normal,
                                     new Vector2(u, v_tex)
                                 );
                             }
 
-                            asset.SubMeshes.Add(new SubMesh { Vertices = vertices, Indices = indices, MaterialIndex = (int)matIdx });
+                            if (lodIndex == 0)
+                            {
+                                asset.SubMeshes.Add(new SubMesh { Vertices = vertices, Indices = indices, MaterialIndex = (int)matIdx });
+                            }
                         }
                     }
                 }
@@ -513,37 +509,25 @@ namespace VToyEditor
                 {
                     for (int i = 0; i < cbCount; i++)
                     {
-                        Matrix4x4 transform = ReadMatrix(r);
-                        float posX = r.ReadSingle();
-                        float posY = r.ReadSingle();
-                        float posZ = r.ReadSingle();
+                        Matrix4x4 transform = Helpers.ReadMatrix(r);
+                        Vector3 halfExtents = Helpers.ReadVector3(r);
 
-                        CollisionBoxes.Add(new CollisionBox { Transform = transform, Position = new Vector3(posX, posY, posZ) });
+                        CollisionBoxes.Add(new CollisionBox { Transform = transform, HalfExtents = halfExtents });
                     }
                 }
             }
 
             // Corners
-            r.ReadBytes(8 * 12);
-            asset.WorldTransform = ReadMatrix(r);
+            Vector3[] corners = new Vector3[8];
+            for (int c = 0; c < 8; c++)
+            {
+                corners[c] = Helpers.ReadVector3(r);
+            }
+            asset.Corners = corners;
+
+            asset.WorldTransform = Helpers.ReadMatrix(r);
 
             return asset;
-        }
-
-        private Matrix4x4 ReadMatrix(BinaryReader r)
-        {
-            // Read 16 floats
-            float[] m = new float[16];
-            for (int i = 0; i < 16; i++) m[i] = r.ReadSingle();
-
-            // Construct Matrix. Note: System.Numerics is Row-Major. 
-            // The file data is likely sequential floats. 
-            return new Matrix4x4(
-                m[0], m[1], m[2], m[3],
-                m[4], m[5], m[6], m[7],
-                m[8], m[9], m[10], m[11],
-                m[12], m[13], m[14], m[15]
-            );
         }
     }
 }

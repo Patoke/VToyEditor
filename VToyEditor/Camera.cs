@@ -24,9 +24,9 @@ namespace VToyEditor
             return Matrix4x4.CreateLookAt(camPos, camPos + camFront, camUp);
         }
 
-        public static Matrix4x4 GetProjectionMatrix(float aspectRatio)
+        public static Matrix4x4 GetProjectionMatrix(float aspectRatio, float nearPlane, float farPlane)
         {
-            return Matrix4x4.CreatePerspectiveFieldOfView(camZoom * (float)Math.PI / 180f, aspectRatio, 25.0f, 100000.0f);
+            return Matrix4x4.CreatePerspectiveFieldOfView(camZoom * (float)Math.PI / 180f, aspectRatio, nearPlane, farPlane);
         }
 
         public static void Look(IMouse mouse, Vector2 position)
@@ -42,7 +42,7 @@ namespace VToyEditor
                 camYaw += xOffset;
                 camPitch -= yOffset;
 
-                //We don't want to be able to look behind us by going over our head or under our feet so make sure it stays within these bounds
+                // We don't want to be able to look behind us by going over our head or under our feet so make sure it stays within these bounds
                 camPitch = Math.Clamp(camPitch, -89.0f, 89.0f);
 
                 camFront.X = MathF.Cos(camYaw * (float)Math.PI / 180f) * MathF.Cos(camPitch * (float)Math.PI / 180f);

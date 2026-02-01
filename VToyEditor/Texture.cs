@@ -17,7 +17,6 @@ namespace VToyEditor
             using var fs = File.OpenRead(filepath);
             using var reader = new BinaryReader(fs);
 
-            // 1. Parse Header
             var magic = reader.ReadBytes(4);
             string magicStr = System.Text.Encoding.ASCII.GetString(magic);
             if (magicStr != "TeX2") throw new Exception($"Invalid texture magic: {magicStr}");
@@ -32,17 +31,14 @@ namespace VToyEditor
 
             byte[] compressedData = reader.ReadBytes(dataSize);
 
-            // 2. Upload to GPU
             Handle = _gl.GenTexture();
             _gl.BindTexture(TextureTarget.Texture2D, Handle);
 
-            // Set parameters
             _gl.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureWrapS, (int)GLEnum.Repeat);
             _gl.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureWrapT, (int)GLEnum.Repeat);
             _gl.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureMinFilter, (int)GLEnum.LinearMipmapLinear);
             _gl.TexParameter(TextureTarget.Texture2D, TextureParameterName.TextureMagFilter, (int)GLEnum.Linear);
 
-            // Select Format
             InternalFormat format = (formatFlag == 1)
                 ? InternalFormat.CompressedRgbaS3TCDxt5Ext
                 : InternalFormat.CompressedRgbaS3TCDxt1Ext;

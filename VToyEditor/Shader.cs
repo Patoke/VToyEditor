@@ -2,6 +2,7 @@
 using System.IO;
 using System.Numerics;
 using Silk.NET.OpenGL;
+using VToyEditor.Parsers;
 
 namespace VToyEditor
 {
@@ -36,6 +37,16 @@ namespace VToyEditor
             _gl.UseProgram(_handle);
         }
 
+        public void SetUniform(string name, bool value)
+        {
+            int location = _gl.GetUniformLocation(_handle, name);
+            if (location == -1)
+            {
+                throw new Exception($"{name} uniform not found on shader.");
+            }
+            _gl.Uniform1(location, value == true ? 1 : 0);
+        }
+
         public void SetUniform(string name, int value)
         {
             int location = _gl.GetUniformLocation(_handle, name);
@@ -48,7 +59,6 @@ namespace VToyEditor
 
         public unsafe void SetUniform(string name, Matrix4x4 value)
         {
-            //A new overload has been created for setting a uniform so we can use the transform in our shader.
             int location = _gl.GetUniformLocation(_handle, name);
             if (location == -1)
             {
@@ -85,6 +95,16 @@ namespace VToyEditor
                 throw new Exception($"{name} uniform not found on shader.");
             }
             _gl.Uniform3(location, new Vector3(value.X, value.Y, value.Z));
+        }
+
+        public void SetUniform(string name, Vector4 value)
+        {
+            int location = _gl.GetUniformLocation(_handle, name);
+            if (location == -1)
+            {
+                throw new Exception($"{name} uniform not found on shader.");
+            }
+            _gl.Uniform4(location, new Vector4(value.X, value.Y, value.Z, value.W));
         }
 
         public void Dispose()
