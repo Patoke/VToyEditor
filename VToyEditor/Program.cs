@@ -199,8 +199,8 @@ namespace VToyEditor
             // Initialize emulated modules list
             IGameModule.Initialize();
 
-            _sceneShader = new Shader(_gl, "scene_shader.vert", "scene_shader.frag");
-            _debugShader = new Shader(_gl, "debug_shader.vert", "debug_shader.frag");
+            _sceneShader = new Shader(_gl, "Shaders/scene_shader.vert", "Shaders/scene_shader.frag");
+            _debugShader = new Shader(_gl, "Shaders/debug_shader.vert", "Shaders/debug_shader.frag");
 
             ParseScene("scns/mp_dm_vertigo.scn");
 
