@@ -531,19 +531,19 @@ namespace VToyEditor
             _gl.DepthFunc(DepthFunction.Less);
 
             // Debug pass
+            _debugShader.Use();
+
+            _debugShader.SetUniform("view", view);
+            _debugShader.SetUniform("projection", projection);
+
+            if (DebugMenu.DisableDepthTest)
+            {
+                _gl.Disable(GLEnum.DepthTest);
+            }
+
             if (DebugMenu.ShowCollisionBoxes)
             {
-                if (DebugMenu.DisableDepthTest)
-                {
-                    _gl.Disable(GLEnum.DepthTest);
-                }
-
-                _debugShader.Use();
-
-                _debugShader.SetUniform("view", view);
-                _debugShader.SetUniform("projection", projection);
-
-                _debugShader.SetUniform("uColor", new Vector4(0, 1, 0, 1)); // Pass a green debug color
+                _debugShader.SetUniform("uColor", new Vector4(0, 1, 0, 1));
 
                 _gl.PolygonMode(GLEnum.FrontAndBack, PolygonMode.Line); // Enable Wireframe
                 _gl.Disable(EnableCap.CullFace);
@@ -561,11 +561,44 @@ namespace VToyEditor
 
                 _gl.PolygonMode(GLEnum.FrontAndBack, PolygonMode.Fill); // Restore solid rendering
                 _gl.Enable(EnableCap.CullFace);
+            }
 
-                if (DebugMenu.DisableDepthTest)
+            if (DebugMenu.ShowStartPoints)
+            {
+                _debugShader.SetUniform("uColor", new Vector4(1, 1, 0, 0.5f));
+
+                foreach (var startPoint in mp_CStartPoint.spawnObjects)
                 {
-                    _gl.Enable(GLEnum.DepthTest);
+                    Matrix4x4 sizeScale = Matrix4x4.CreateScale(new Vector3(75f, 15f, 75f));
+                    Matrix4x4 positionTransform = Matrix4x4.CreateTranslation(startPoint.SpawnPosition);
+                    Matrix4x4 model = sizeScale * positionTransform * rootTransform;
+
+                    _debugShader.SetUniform("model", model);
+
+                    _gl.BindVertexArray(_obbMesh.mesh.Vao);
+                    _gl.DrawElements(PrimitiveType.Triangles, (uint)_obbMesh.mesh.IndexCount, DrawElementsType.UnsignedShort, null);
                 }
+            }
+
+            if (DebugMenu.ShowHealthPacks)
+            {
+                _debugShader.SetUniform("uColor", new Vector4(1, 0, 0, 0.5f));
+
+                foreach (var healthPack in mp_salud.healthPackObjects)
+                {
+                    Matrix4x4 sizeScale = Matrix4x4.CreateScale(50f);
+                    Matrix4x4 model = sizeScale * healthPack.Transform * rootTransform;
+
+                    _debugShader.SetUniform("model", model);
+
+                    _gl.BindVertexArray(_obbMesh.mesh.Vao);
+                    _gl.DrawElements(PrimitiveType.Triangles, (uint)_obbMesh.mesh.IndexCount, DrawElementsType.UnsignedShort, null);
+                }
+            }
+
+            if (DebugMenu.DisableDepthTest)
+            {
+                _gl.Enable(GLEnum.DepthTest);
             }
 
             DebugMenu.OnRender();

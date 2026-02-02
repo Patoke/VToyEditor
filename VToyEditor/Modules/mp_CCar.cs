@@ -1,11 +1,12 @@
-﻿using System;
+﻿using Silk.NET.Vulkan;
+using System;
 using System.Collections.Generic;
 using System.Numerics;
 using System.Text;
 
 namespace VToyEditor.Modules
 {
-    public class CarObject
+    public class CarObject : VTModule
     {
         public string ModelName;
         public Matrix4x4 Transform;
@@ -15,16 +16,45 @@ namespace VToyEditor.Modules
     {
         public static List<CarObject> carObjects = new List<CarObject>();
 
-        public void Run(byte[] data)
+        public void Run(VTModule data)
         {
-            uint modelNameSize = BitConverter.ToUInt32(data, 0);
-            string modelName = Helpers.GetString(data, 4, (int)modelNameSize);
+            var reader = new Helpers.ByteReader { data = data.ModuleData };
 
-            Matrix4x4 modelTransform = Helpers.GetMatrix(data, 4 + (int)modelNameSize);
+            uint modelNameSize = Math.Max(reader.GetUInt32(), 0);
+            string modelName = reader.GetString((int)modelNameSize);
+
+            Matrix4x4 modelTransform = reader.GetMatrix();
+
+            var co = VTModule.Create<CarObject>(data);
+
+            co.ModelName = modelName;
+            co.Transform = modelTransform;
+
+            carObjects.Add(co);
 
             Console.WriteLine($"mp_CCar, model name: {modelName}");
+        }
 
-            carObjects.Add(new CarObject { ModelName = modelName, Transform = modelTransform });
+        public static void WriteObjects(BinaryWriter writer)
+        {
+            for (int i = 0; i < carObjects.Count; i++)
+            {
+                var co = carObjects[i];
+                co.Write(writer);
+
+                using (new Helpers.DataSizeWriterScope(writer))
+                {
+                    writer.Write(BitConverter.GetBytes(co.ModelName.Length + 1));
+                    writer.Write(Encoding.UTF8.GetBytes(co.ModelName + '\0'));
+
+                    writer.Write(Helpers.MatrixAsBytes(co.Transform));
+
+                    // padding? apparently unused in the mp_CCar module but affects size regardless
+                    writer.Write(BitConverter.GetBytes((int)1));
+                    writer.Write(BitConverter.GetBytes((int)256));
+                    writer.Write(new byte[0xE]);
+                }
+            }
         }
     }
 }
