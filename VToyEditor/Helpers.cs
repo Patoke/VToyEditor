@@ -3,11 +3,26 @@ using System;
 using System.Collections.Generic;
 using System.Numerics;
 using System.Text;
+using VToyEditor.Parsers;
 
 namespace VToyEditor
 {
     public static class Helpers
     {
+        public static string GetCaseInsensitivePath(string filePath)
+        {
+            if (filePath == string.Empty)
+            {
+                return string.Empty;
+            }
+
+            string? actualFilePath = Directory.GetFiles(Path.GetDirectoryName(filePath))
+                .FirstOrDefault(f => Path.GetFileName(f)
+                .Equals(Path.GetFileName(filePath), StringComparison.OrdinalIgnoreCase));
+
+            return actualFilePath ?? string.Empty;
+        }
+        
         public struct DataSizeWriterScope : IDisposable
         {
             private readonly BinaryWriter _writer;

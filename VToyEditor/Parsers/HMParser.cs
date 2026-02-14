@@ -30,10 +30,14 @@ namespace VToyEditor.Parsers
 
     public class VTHMParser
     {
+        public string HeightMapFile { get; private set; }
+
         public List<HeightMapSector> HeightMapSectors = new List<HeightMapSector>();
 
         public void Parse(string path)
         {
+            HeightMapFile = path;
+
             using var fs = File.OpenRead(path);
             using var reader = new BinaryReader(fs);
 

@@ -29,6 +29,16 @@ namespace VToyEditor
             return Matrix4x4.CreatePerspectiveFieldOfView(camZoom * (float)Math.PI / 180f, aspectRatio, nearPlane, farPlane);
         }
 
+        public static Vector3 GetEulerAngles()
+        {
+            Vector3 dir = Vector3.Normalize(camFront);
+
+            float pitch = MathF.Asin(dir.Y) * (180.0f / MathF.PI);
+            float yaw = MathF.Atan2(dir.Z, dir.X) * (180.0f / MathF.PI);
+
+            return new Vector3(pitch, yaw, 0f);
+        }
+
         public static void Look(IMouse mouse, Vector2 position)
         {
             var lookSensitivity = 0.1f;

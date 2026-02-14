@@ -62,12 +62,15 @@ namespace VToyEditor
         private static bool _cursorLocked = true;
 
         public static ImGuiController imguiController = null;
+
+        public static vtPackParser packer = new vtPackParser();
         public static VTSCNParser scene;
         public static VTOPTParser sceneOPT;
         public static VTHMParser sceneHeightMap;
+
         public static Dictionary<string, Texture> textureCache = new Dictionary<string, Texture>();
 
-        private static void AddTextureToCache(string texName, string fullPath)
+        public static void AddTextureToCache(string texName, string fullPath)
         {
             if (string.IsNullOrEmpty(texName) || textureCache.ContainsKey(texName)) return;
 
@@ -87,8 +90,58 @@ namespace VToyEditor
             }
         }
 
-        public static void ParseScene(string filename)
+        public static void ParseScene(string scenePathRaw, bool skipSceneParse = false, string customMapName = "", string customHeightMapName = "")
         {
+            // If we have no scene object, create it anyways (even if we should skip this scene parse)
+            if (!skipSceneParse || scene == null)
+            {
+                scene = new VTSCNParser();
+            }
+
+            // Verify each file exists
+            var scenePath = Helpers.GetCaseInsensitivePath(scenePathRaw);
+
+            // Obviously, if we shouldn't skip this scene, we need to parse it
+            if (!skipSceneParse)
+            {
+                scene.Parse(scenePath);
+            }
+
+            var heightMapPathRaw = skipSceneParse ? customHeightMapName : vtPackParser.DefaultOutputFolder + scene.HeightMapName;
+            var mapPathRaw = skipSceneParse ? customMapName : vtPackParser.DefaultOutputFolder + scene.MapName;
+
+            var heightMapPath = Helpers.GetCaseInsensitivePath(heightMapPathRaw);
+            var mapPath = Helpers.GetCaseInsensitivePath(mapPathRaw);
+
+            if ((scenePath == null || scenePath == string.Empty) && !skipSceneParse)
+            {
+                DebugMenu.ShowError("Missing scene", $"Could not find scene file '{scenePathRaw}', aborting.");
+                return;
+            }
+            
+            bool failedHeightMap = false;
+            if (heightMapPath == null || heightMapPath == string.Empty)
+            {
+                if (sceneHeightMap == null)
+                {
+                    throw new Exception($"Missing height map file '{heightMapPathRaw}' and no height map object was ever created.");
+                }
+
+                DebugMenu.ShowError("Missing height map", $"Could not find height map file '{heightMapPathRaw}', using last loaded height map file.");
+                failedHeightMap = true;
+            }
+
+            if (mapPath == null || mapPath == string.Empty)
+            {
+                if (sceneOPT == null)
+                {
+                    throw new Exception($"Missing map file '{mapPathRaw}' and no map object was ever created.");
+                }
+
+                DebugMenu.ShowError("Missing map", $"Could not find map file '{mapPathRaw}', aborting.");
+                return;
+            }
+
             // Destroy old meshes
             if (sceneOPT != null)
             {
@@ -104,23 +157,25 @@ namespace VToyEditor
                 _obbMesh.mesh.Dispose();
             }
 
-            // Load Scene
-            scene = new VTSCNParser();
-            scene.Parse(filename);
-
-            sceneHeightMap = new VTHMParser();
-            sceneHeightMap.Parse("./hms/" + scene.HeightMapName.Replace("nfos\\", string.Empty));
-
+            if (!failedHeightMap && heightMapPath != null && heightMapPath != string.Empty)
+            {
+                sceneHeightMap = new VTHMParser();
+                sceneHeightMap.Parse(heightMapPath);
+            }
+            
             sceneOPT = new VTOPTParser();
-            sceneOPT.Parse("./opts/" + scene.MapName.Replace("nfos\\", string.Empty));
+            sceneOPT.Parse(mapPath);
 
-            string textureDir = "./texs/";
+            string textureDir = vtPackParser.DefaultOutputFolder + "texs\\";
 
-            // Load Sky Texture
-            string skyTexturePath = Path.Combine(textureDir, scene.SkyTextureName);
-            AddTextureToCache(scene.SkyTextureName, skyTexturePath);
+            // Load sky texture
+            if (!skipSceneParse)
+            {
+                string skyTexturePath = Path.Combine(textureDir, scene.SkyTextureName);
+                AddTextureToCache(scene.SkyTextureName, skyTexturePath);
+            }
 
-            // Load Scene Textures
+            // Load scene textures
             foreach (var mesh in sceneOPT.StaticMeshes)
             {
                 foreach (var material in mesh.Materials)
@@ -130,7 +185,7 @@ namespace VToyEditor
                 }
             }
 
-            // Load Decal Textures
+            // Load decal textures
             foreach (var decal in sceneOPT.Decals)
             {
                 string fullPath = Path.Combine(textureDir, decal.Name);
@@ -153,8 +208,8 @@ namespace VToyEditor
         static void Main(string[] args)
         {
             var options = WindowOptions.Default;
-            options.Size = new Vector2D<int>(1280, 720);
-            options.Title = "VTO1 Scene Renderer";
+            options.Size = new Vector2D<int>(1620, 920);
+            options.Title = "VToyEditor";
 
             _window = Window.Create(options);
             _window.Load += OnLoad;
@@ -172,6 +227,20 @@ namespace VToyEditor
         private static unsafe void OnLoad()
         {
             _gl = _window.CreateOpenGL();
+
+            // Unpack file system
+            if (File.Exists(vtPackParser.DefaultInPackName) && !Directory.Exists(vtPackParser.DefaultOutputFolder))
+            {
+                Console.WriteLine("Initial unpacking...");
+                
+                packer.Unpack(vtPackParser.DefaultInPackName, vtPackParser.DefaultOutputFolder);
+
+                Console.WriteLine("Unpack done");
+            }
+            else if (!File.Exists(vtPackParser.DefaultInPackName) && !Directory.Exists(vtPackParser.DefaultOutputFolder))
+            {
+                throw new Exception($"Missing '{vtPackParser.DefaultInPackName}' file, please get this from your legit game installation and place it next to 'VToyEditor.exe'.");
+            }
 
             // Input setup
             var input = _window.CreateInput();
@@ -199,10 +268,11 @@ namespace VToyEditor
             // Initialize emulated modules list
             IGameModule.Initialize();
 
-            _sceneShader = new Shader(_gl, "Shaders/scene_shader.vert", "Shaders/scene_shader.frag");
-            _debugShader = new Shader(_gl, "Shaders/debug_shader.vert", "Shaders/debug_shader.frag");
+            _sceneShader = new Shader(_gl, "scene_shader.vert", "scene_shader.frag");
+            _debugShader = new Shader(_gl, "debug_shader.vert", "debug_shader.frag");
 
-            ParseScene("scns/mp_dm_vertigo.scn");
+            // Todo: we assume this scene always exists but maybe we should let the user pick which scene to load at startup?
+            ParseScene(vtPackParser.ScenesFolder + "mp_dm_vertigo.scn");
 
             _gl.Enable(EnableCap.DepthTest);
 
@@ -282,6 +352,7 @@ namespace VToyEditor
             _sceneShader.SetUniform("viewPos", Camera.camPos);
 
             // Lighting
+            // Todo: add DX9-like shadows so these display appropriately
             int lightIndex = 0;
             Vector3 globalAmbientAccumulator = Vector3.Zero;
             int maxLights = 128;
@@ -467,6 +538,7 @@ namespace VToyEditor
             }
 
             // Transparency pass
+            // Todo: in the map 'plaza' there's a church where some flags don't render correctly through the transparent floor, fix this
             // Pass decals to transparent renderer
             foreach (var decal in sceneOPT.Decals)
             {
@@ -588,6 +660,22 @@ namespace VToyEditor
                 {
                     Matrix4x4 sizeScale = Matrix4x4.CreateScale(50f);
                     Matrix4x4 model = sizeScale * healthPack.Transform * rootTransform;
+
+                    _debugShader.SetUniform("model", model);
+
+                    _gl.BindVertexArray(_obbMesh.mesh.Vao);
+                    _gl.DrawElements(PrimitiveType.Triangles, (uint)_obbMesh.mesh.IndexCount, DrawElementsType.UnsignedShort, null);
+                }
+            }
+
+            if (DebugMenu.ShowFlagObjects)
+            {
+                _debugShader.SetUniform("uColor", new Vector4(0, 0, 1, 0.5f));
+
+                foreach (var flagObject in mp_Flag.flagObjects)
+                {
+                    Matrix4x4 sizeScale = Matrix4x4.CreateScale(50f);
+                    Matrix4x4 model = sizeScale * flagObject.Transform * rootTransform;
 
                     _debugShader.SetUniform("model", model);
 

@@ -8,6 +8,8 @@ namespace VToyEditor
 {
     public class Shader : IDisposable
     {
+        public static string DefaultShaderDir = "Shaders\\";
+
         private uint _handle;
         private GL _gl;
 
@@ -15,8 +17,8 @@ namespace VToyEditor
         {
             _gl = gl;
 
-            uint vertex = LoadShader(ShaderType.VertexShader, vertexPath);
-            uint fragment = LoadShader(ShaderType.FragmentShader, fragmentPath);
+            uint vertex = LoadShader(ShaderType.VertexShader, DefaultShaderDir + vertexPath);
+            uint fragment = LoadShader(ShaderType.FragmentShader, DefaultShaderDir + fragmentPath);
             _handle = _gl.CreateProgram();
             _gl.AttachShader(_handle, vertex);
             _gl.AttachShader(_handle, fragment);

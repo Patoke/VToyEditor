@@ -166,6 +166,8 @@ namespace VToyEditor.Parsers
 
     public class VTOPTParser
     {
+        public string MapFile { get; private set; }
+
         public List<StaticMeshAsset> StaticMeshes = new List<StaticMeshAsset>();
         public List<PropObject> Props = new List<PropObject>();
         public List<DecalObject> Decals = new List<DecalObject>();
@@ -175,6 +177,8 @@ namespace VToyEditor.Parsers
 
         public void Parse(string path)
         {
+            MapFile = path;
+
             using var fs = File.OpenRead(path);
             using var reader = new BinaryReader(fs);
 

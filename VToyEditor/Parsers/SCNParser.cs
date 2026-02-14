@@ -10,6 +10,8 @@ namespace VToyEditor.Parsers
 {
     public class VTSCNParser
     {
+        public string SceneFile { get; private set; }
+
         public string MapName = "";
         public string HeightMapName = "";
         public Vector3 ShadowLightDirection = new Vector3(0, 0, -1);
@@ -27,6 +29,26 @@ namespace VToyEditor.Parsers
 
         public void Parse(string path)
         {
+            SceneFile = path;
+
+            // Remove modules from last scene (if they exist)
+            foreach (var moduleEntry in IGameModule.Modules)
+            {
+                Type moduleType = moduleEntry.Value;
+
+                var listField = moduleType.GetFields(BindingFlags.Static | BindingFlags.Public)
+                    .FirstOrDefault(f => f.FieldType.IsGenericType && f.FieldType.GetGenericTypeDefinition() == typeof(List<>));
+
+                if (listField == null) continue;
+
+                var list = listField.GetValue(null) as System.Collections.IList;
+                if (list == null || list.Count == 0) continue;
+
+                // Remove all objects
+                list.Clear(); // Known, implemented modules
+                UncaughtModules.Clear(); // Unknown, unimplemented modules (we just store the raw data for these, so we can write them back unmodified)
+            }
+
             using var fs = File.OpenRead(path);
             using var reader = new BinaryReader(fs);
 
